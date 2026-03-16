@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -47,6 +48,22 @@ func (s *R2Source) Load(ctx context.Context) ([]byte, error) {
 	defer out.Body.Close()
 
 	return io.ReadAll(out.Body)
+}
+
+func (s *R2Source) Write(ctx context.Context, b []byte) error {
+	if err := s.init(ctx); err != nil {
+		return err
+	}
+	if s.Bucket == "" || s.Key == "" {
+		return fmt.Errorf("config: r2 missing bucket/key")
+	}
+
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: &s.Bucket,
+		Key:    &s.Key,
+		Body:   bytes.NewReader(b),
+	})
+	return err
 }
 
 func (s *R2Source) init(ctx context.Context) error {

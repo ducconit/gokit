@@ -4,16 +4,20 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 )
 
 type Manager struct {
 	v    *viper.Viper
+	src  Source
+	opts Options
 	stop func()
 
 	mu sync.RWMutex
@@ -27,7 +31,9 @@ func Load(ctx context.Context, src Source, opts Options) (*Manager, error) {
 	v := viper.New()
 
 	m := &Manager{
-		v: v,
+		v:    v,
+		src:  src,
+		opts: opts,
 	}
 
 	if lfs, ok := src.(*LocalFileSource); ok {
@@ -51,6 +57,51 @@ func (m *Manager) Unmarshal(dst any) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.v.Unmarshal(dst)
+}
+
+func (m *Manager) SetDefaults(defaults map[string]any) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k, v := range defaults {
+		m.v.SetDefault(k, v)
+	}
+}
+
+func (m *Manager) Save(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Nếu là LocalFileSource, sử dụng trực tiếp hàm WriteConfig của Viper
+	if _, ok := m.src.(*LocalFileSource); ok {
+		return m.v.WriteConfig()
+	}
+
+	// Đối với các store khác, marshal cấu hình hiện tại và ghi qua Source.Write
+	format := m.opts.Format
+	if format == "" {
+		format = "yaml"
+	}
+
+	var b []byte
+	var err error
+
+	// Lấy tất cả các cài đặt hiện có (bao gồm cả defaults và overrides)
+	settings := m.v.AllSettings()
+
+	switch format {
+	case "json":
+		b, err = json.MarshalIndent(settings, "", "  ")
+	case "yaml", "yml":
+		b, err = yaml.Marshal(settings)
+	default:
+		return fmt.Errorf("config: unsupported save format: %s", format)
+	}
+
+	if err != nil {
+		return err
+	}
+
+	return m.src.Write(ctx, b)
 }
 
 func (m *Manager) Close() error {

@@ -7,9 +7,10 @@ import (
 )
 
 type SQLSource struct {
-	DB    *sql.DB
-	Query string
-	Args  []any
+	DB        *sql.DB
+	Query     string // Query for Load
+	SaveQuery string // Query for Save
+	Args      []any
 }
 
 func (s *SQLSource) Load(ctx context.Context) ([]byte, error) {
@@ -26,4 +27,16 @@ func (s *SQLSource) Load(ctx context.Context) ([]byte, error) {
 		return nil, err
 	}
 	return append([]byte(nil), b...), nil
+}
+
+func (s *SQLSource) Write(ctx context.Context, b []byte) error {
+	if s.DB == nil {
+		return fmt.Errorf("config: sql missing db")
+	}
+	if s.SaveQuery == "" {
+		return fmt.Errorf("config: sql missing save query")
+	}
+
+	_, err := s.DB.ExecContext(ctx, s.SaveQuery, append(s.Args, b)...)
+	return err
 }

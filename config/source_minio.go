@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -40,6 +41,18 @@ func (s *MinioSource) Load(ctx context.Context) ([]byte, error) {
 	defer obj.Close()
 
 	return io.ReadAll(obj)
+}
+
+func (s *MinioSource) Write(ctx context.Context, b []byte) error {
+	if err := s.init(); err != nil {
+		return err
+	}
+	if s.Bucket == "" || s.Key == "" {
+		return fmt.Errorf("config: minio missing bucket/key")
+	}
+
+	_, err := s.client.PutObject(ctx, s.Bucket, s.Key, bytes.NewReader(b), int64(len(b)), minio.PutObjectOptions{})
+	return err
 }
 
 func (s *MinioSource) init() error {

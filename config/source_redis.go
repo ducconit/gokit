@@ -22,3 +22,14 @@ func (s *RedisSource) Load(ctx context.Context) ([]byte, error) {
 
 	return s.Client.Get(ctx, s.Key).Bytes()
 }
+
+func (s *RedisSource) Write(ctx context.Context, b []byte) error {
+	if s.Client == nil {
+		return fmt.Errorf("config: redis missing client")
+	}
+	if s.Key == "" {
+		return fmt.Errorf("config: redis missing key")
+	}
+
+	return s.Client.Set(ctx, s.Key, b, 0).Err()
+}
