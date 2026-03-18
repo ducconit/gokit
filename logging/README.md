@@ -4,7 +4,7 @@ Wrapper cho `github.com/rs/zerolog` với mode output linh hoạt: console/file/
 
 ## Cách dùng
 
-### Console pretty
+### Sử dụng zerolog trực tiếp (New)
 
 ```go
 logger, closer, err := logging.New(logging.Config{
@@ -20,10 +20,10 @@ defer closer.Close()
 logger.Info().Str("service", "api").Msg("started")
 ```
 
-### Ghi file + console
+### Sử dụng thông qua Interface (NewWrapper)
 
 ```go
-logger, closer, err := logging.New(logging.Config{
+logger, closer, err := logging.NewWrapper(logging.Config{
 	Mode:          logging.ModeBoth,
 	Level:         "info",
 	FilePath:      "./app.log",
@@ -34,6 +34,13 @@ if err != nil {
 }
 defer closer.Close()
 
-logger.Warn().Str("k", "v").Msg("something")
-```
+// Sử dụng với các fields (key-value)
+logger.Info("service started", "version", "1.0.0", "env", "production")
 
+// Sử dụng với context (With)
+childLogger := logger.With("request_id", "123")
+childLogger.Debug("processing request")
+
+// Sử dụng với lỗi
+logger.Error("failed to process", err, "user_id", 456)
+```
