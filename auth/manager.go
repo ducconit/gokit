@@ -26,10 +26,18 @@ type Manager struct {
 	now   func() time.Time
 }
 
-func New(cfg Config, store SessionStore) (*Manager, error) {
-	if store == nil {
-		return nil, fmt.Errorf("auth: missing session store")
+func New(opts ...Option) (*Manager, error) {
+	cfg := Config{
+		AccessTTL:  15 * time.Minute,
+		RefreshTTL: 30 * 24 * time.Hour,
 	}
+
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	// store is now optional
+	store := cfg.Store
 
 	// If it's a SQLStore, inject the execution logic from config or use defaults if DB is provided
 	if sqlStore, ok := store.(*SQLStore); ok {
@@ -53,12 +61,6 @@ func New(cfg Config, store SessionStore) (*Manager, error) {
 	if len(cfg.HMACSecret) == 0 {
 		return nil, fmt.Errorf("auth: missing HMAC secret")
 	}
-	if cfg.AccessTTL <= 0 {
-		cfg.AccessTTL = 15 * time.Minute
-	}
-	if cfg.RefreshTTL <= 0 {
-		cfg.RefreshTTL = 30 * 24 * time.Hour
-	}
 
 	return &Manager{
 		cfg:   cfg,
@@ -77,17 +79,19 @@ func (m *Manager) Issue(ctx context.Context, subjectID, subjectType string, meta
 		return TokenPair{}, err
 	}
 
-	s := Session{
-		ID:              sid,
-		SubjectID:       subjectID,
-		SubjectType:     subjectType,
-		CreatedAt:       now,
-		ExpiresAt:       refreshExp,
-		RefreshTokenSum: sha256.Sum256([]byte(refresh)),
-		Metadata:        metadata,
-	}
-	if err := m.store.Put(ctx, s); err != nil {
-		return TokenPair{}, err
+	if m.store != nil {
+		s := Session{
+			ID:              sid,
+			SubjectID:       subjectID,
+			SubjectType:     subjectType,
+			CreatedAt:       now,
+			ExpiresAt:       refreshExp,
+			RefreshTokenSum: sha256.Sum256([]byte(refresh)),
+			Metadata:        metadata,
+		}
+		if err := m.store.Put(ctx, s); err != nil {
+			return TokenPair{}, err
+		}
 	}
 
 	accessExp := now.Add(m.cfg.AccessTTL)
@@ -106,6 +110,9 @@ func (m *Manager) Issue(ctx context.Context, subjectID, subjectType string, meta
 }
 
 func (m *Manager) UpdateSessionMetadata(ctx context.Context, sessionID string, metadata map[string]string) error {
+	if m.store == nil {
+		return fmt.Errorf("auth: session store is required for UpdateSessionMetadata")
+	}
 	return m.store.UpdateMetadata(ctx, sessionID, metadata)
 }
 
@@ -123,6 +130,10 @@ func (m *Manager) VerifyAccess(ctx context.Context, token string) (AccessClaims,
 	}
 	if !t.Valid {
 		return AccessClaims{}, ErrUnauthorized
+	}
+
+	if m.store == nil {
+		return claims, nil
 	}
 
 	// 1. Check if subject is banned
@@ -166,6 +177,38 @@ func (m *Manager) Refresh(ctx context.Context, refreshToken string, opts Refresh
 		return TokenPair{}, ErrUnauthorized
 	}
 
+	now := m.now()
+
+	// If stateless (no store), we just issue new tokens based on valid refresh claims
+	if m.store == nil {
+		newRefreshExp := claims.ExpiresAt.Time
+		var newRefresh string
+		if opts.Rotate {
+			newRefreshExp = now.Add(m.cfg.RefreshTTL)
+			var err error
+			newRefresh, err = m.signRefreshToken(now, newRefreshExp, claims.SubjectID, claims.SubjectType, claims.SessionID)
+			if err != nil {
+				return TokenPair{}, err
+			}
+		} else {
+			newRefresh = refreshToken
+		}
+
+		newAccessExp := now.Add(m.cfg.AccessTTL)
+		newAccess, err := m.signAccessToken(now, newAccessExp, claims.SubjectID, claims.SubjectType, claims.SessionID)
+		if err != nil {
+			return TokenPair{}, err
+		}
+
+		return TokenPair{
+			AccessToken:      newAccess,
+			RefreshToken:     newRefresh,
+			AccessExpiresAt:  newAccessExp,
+			RefreshExpiresAt: newRefreshExp,
+			SessionID:        claims.SessionID,
+		}, nil
+	}
+
 	s, err := m.store.Get(ctx, claims.SessionID)
 	if err != nil {
 		return TokenPair{}, ErrUnauthorized
@@ -177,7 +220,6 @@ func (m *Manager) Refresh(ctx context.Context, refreshToken string, opts Refresh
 		return TokenPair{}, ErrUnauthorized
 	}
 
-	now := m.now()
 	var newRefresh string
 	newRefreshExp := s.ExpiresAt
 
@@ -212,14 +254,23 @@ func (m *Manager) Refresh(ctx context.Context, refreshToken string, opts Refresh
 }
 
 func (m *Manager) Logout(ctx context.Context, sessionID string) error {
+	if m.store == nil {
+		return fmt.Errorf("auth: session store is required for Logout")
+	}
 	return m.store.Delete(ctx, sessionID)
 }
 
 func (m *Manager) LogoutAll(ctx context.Context, subjectID string) error {
+	if m.store == nil {
+		return fmt.Errorf("auth: session store is required for LogoutAll")
+	}
 	return m.store.DeleteBySubject(ctx, subjectID)
 }
 
 func (m *Manager) BanSubject(ctx context.Context, subjectID string, until time.Time) error {
+	if m.store == nil {
+		return fmt.Errorf("auth: session store is required for BanSubject")
+	}
 	return m.store.BanSubject(ctx, subjectID, until)
 }
 

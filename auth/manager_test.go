@@ -10,13 +10,14 @@ func TestIssueVerifyRefreshLogout(t *testing.T) {
 	ctx := context.Background()
 
 	store := NewMemoryStore()
-	m, err := New(Config{
-		Issuer:     "test",
-		Audience:   []string{"test"},
-		AccessTTL:  1 * time.Minute,
-		RefreshTTL: 10 * time.Minute,
-		HMACSecret: []byte("secret"),
-	}, store)
+	m, err := New(
+		WithIssuer("test"),
+		WithAudience("test"),
+		WithAccessTTL(1*time.Minute),
+		WithRefreshTTL(10*time.Minute),
+		WithHMACSecret([]byte("secret")),
+		WithStore(store),
+	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -70,13 +71,14 @@ func TestLogoutAll(t *testing.T) {
 	ctx := context.Background()
 
 	store := NewMemoryStore()
-	m, _ := New(Config{
-		Issuer:     "test",
-		Audience:   []string{"test"},
-		AccessTTL:  1 * time.Minute,
-		RefreshTTL: 10 * time.Minute,
-		HMACSecret: []byte("secret"),
-	}, store)
+	m, _ := New(
+		WithIssuer("test"),
+		WithAudience("test"),
+		WithAccessTTL(1*time.Minute),
+		WithRefreshTTL(10*time.Minute),
+		WithHMACSecret([]byte("secret")),
+		WithStore(store),
+	)
 
 	pair1, _ := m.Issue(ctx, "u1", "user", nil)
 	pair2, _ := m.Issue(ctx, "u1", "user", nil)
@@ -97,13 +99,14 @@ func TestBanSubject(t *testing.T) {
 	ctx := context.Background()
 
 	store := NewMemoryStore()
-	m, err := New(Config{
-		Issuer:     "test",
-		Audience:   []string{"test"},
-		AccessTTL:  1 * time.Minute,
-		RefreshTTL: 10 * time.Minute,
-		HMACSecret: []byte("secret"),
-	}, store)
+	m, err := New(
+		WithIssuer("test"),
+		WithAudience("test"),
+		WithAccessTTL(1*time.Minute),
+		WithRefreshTTL(10*time.Minute),
+		WithHMACSecret([]byte("secret")),
+		WithStore(store),
+	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -119,5 +122,54 @@ func TestBanSubject(t *testing.T) {
 
 	if _, err := m.VerifyAccess(ctx, pair.AccessToken); err == nil {
 		t.Fatalf("expected forbidden when banned")
+	}
+}
+
+func TestStatelessAuth(t *testing.T) {
+	ctx := context.Background()
+
+	// Initialize without store
+	m, err := New(
+		WithIssuer("test"),
+		WithAudience("test"),
+		WithAccessTTL(1*time.Minute),
+		WithRefreshTTL(10*time.Minute),
+		WithHMACSecret([]byte("secret")),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	pair, err := m.Issue(ctx, "u1", "user", nil)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	claims, err := m.VerifyAccess(ctx, pair.AccessToken)
+	if err != nil {
+		t.Fatalf("VerifyAccess: %v", err)
+	}
+	if claims.SubjectID != "u1" {
+		t.Fatalf("expected subject u1, got %s", claims.SubjectID)
+	}
+
+	// Test Refresh in stateless mode
+	newPair, err := m.Refresh(ctx, pair.RefreshToken, RefreshOptions{Rotate: true})
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if newPair.RefreshToken == pair.RefreshToken {
+		t.Fatalf("expected refresh token rotated")
+	}
+
+	// Verify new access token
+	_, err = m.VerifyAccess(ctx, newPair.AccessToken)
+	if err != nil {
+		t.Fatalf("VerifyAccess new: %v", err)
+	}
+
+	// Test methods that require store
+	if err := m.Logout(ctx, pair.SessionID); err == nil {
+		t.Fatalf("expected error for Logout in stateless mode")
 	}
 }

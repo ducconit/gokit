@@ -10,23 +10,38 @@ JWT auth (access/refresh token) + session management theo nhiều driver (memory
 
 ## Cách dùng
 
-### Khởi tạo (memory store)
+### 1. Chế độ Session-based (Có Store)
+
+Đây là chế độ đầy đủ tính năng nhất, cho phép bạn thu hồi token (Logout), kiểm tra trạng thái bị cấm (Ban), và quản lý metadata của phiên làm việc.
 
 ```go
 store := auth.NewMemoryStore()
-m, err := auth.New(auth.Config{
-	Issuer:     "my-service",
-	Audience:   []string{"my-service"},
-	AccessTTL:  15 * time.Minute,
-	RefreshTTL: 30 * 24 * time.Hour,
-	HMACSecret: []byte("change-me"),
-}, store)
-if err != nil {
-	panic(err)
-}
+m, err := auth.New(
+	auth.WithIssuer("my-service"),
+	auth.WithAudience("my-service"),
+	auth.WithAccessTTL(15 * time.Minute),
+	auth.WithRefreshTTL(30 * 24 * time.Hour),
+	auth.WithHMACSecret([]byte("change-me")),
+	auth.WithStore(store),
+)
 ```
 
-### Khởi tạo (SQL store với logic mặc định)
+### 2. Chế độ Stateless (Chỉ JWT - Không có Store)
+
+Nếu bạn chỉ cần quản lý JWT (Issue/Verify) mà không cần lưu trữ session ở server, bạn có thể bỏ qua tùy chọn `WithStore`.
+
+**Đặc điểm:**
+- Không hỗ trợ Logout (Token vẫn hợp lệ cho đến khi hết hạn).
+- Không hỗ trợ Ban Subject ngay lập tức (Chỉ có hiệu lực sau khi token cũ hết hạn).
+- Tiết kiệm tài nguyên và độ trễ do không phải truy vấn Store.
+
+```go
+m, err := auth.New(
+    auth.WithHMACSecret([]byte("change-me")),
+) // Không gọi WithStore
+```
+
+### 3. Khởi tạo (SQL store với logic mặc định)
 
 Nếu bạn truyền `DB` vào `SQLStore`, hệ thống sẽ tự động sử dụng logic thực thi mặc định.
 
@@ -35,14 +50,27 @@ store := &auth.SQLStore{
     DB:      db,
     Dialect: auth.SQLDialectQuestion,
 }
-m, err := auth.New(auth.Config{
-    // ... các config khác
-}, store)
+m, err := auth.New(
+    auth.WithHMACSecret([]byte("secret")),
+    auth.WithStore(store),
+)
 ```
 
-### Khởi tạo (SQL store với logic tùy chỉnh)
+### 4. Khởi tạo (SQL store với logic tùy chỉnh)
 
-Bạn có thể ghi đè logic thực thi SQL thông qua `Config` (ví dụ: để logging hoặc custom transaction).
+Bạn có thể ghi đè logic thực thi SQL thông qua các tùy chọn `WithSQLExec` hoặc `WithSQLQueryRow`.
+
+```go
+m, err := auth.New(
+    auth.WithHMACSecret([]byte("secret")),
+    auth.WithSQLExec(func(ctx context.Context, query string, args ...any) (sql.Result, error) {
+        return db.ExecContext(ctx, query, args...)
+    }),
+    auth.WithStore(&auth.SQLStore{
+        Dialect: auth.SQLDialectQuestion,
+    }),
+)
+```
 
 ### Login → issue token pair
 
