@@ -1,6 +1,10 @@
 package auth
 
-import "time"
+import (
+	"context"
+	"database/sql"
+	"time"
+)
 
 type Config struct {
 	Issuer     string
@@ -8,4 +12,8 @@ type Config struct {
 	AccessTTL  time.Duration
 	RefreshTTL time.Duration
 	HMACSecret []byte
+
+	// SQL related configs
+	SQLExec     func(ctx context.Context, query string, args ...any) (sql.Result, error)
+	SQLQueryRow func(ctx context.Context, query string, args ...any) *sql.Row
 }

@@ -7,17 +7,17 @@ import (
 )
 
 type MemoryStore struct {
-	mu       sync.RWMutex
-	sessions map[string]Session
-	userIdx  map[string]map[string]struct{}
-	bans     map[string]time.Time
+	mu         sync.RWMutex
+	sessions   map[string]Session
+	subjectIdx map[string]map[string]struct{}
+	bans       map[string]time.Time
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		sessions: map[string]Session{},
-		userIdx:  map[string]map[string]struct{}{},
-		bans:     map[string]time.Time{},
+		sessions:   map[string]Session{},
+		subjectIdx: map[string]map[string]struct{}{},
+		bans:       map[string]time.Time{},
 	}
 }
 
@@ -27,10 +27,10 @@ func (s *MemoryStore) Put(ctx context.Context, sess Session) error {
 	defer s.mu.Unlock()
 
 	s.sessions[sess.ID] = sess
-	if s.userIdx[sess.UserID] == nil {
-		s.userIdx[sess.UserID] = map[string]struct{}{}
+	if s.subjectIdx[sess.SubjectID] == nil {
+		s.subjectIdx[sess.SubjectID] = map[string]struct{}{}
 	}
-	s.userIdx[sess.UserID][sess.ID] = struct{}{}
+	s.subjectIdx[sess.SubjectID][sess.ID] = struct{}{}
 	return nil
 }
 
@@ -57,26 +57,26 @@ func (s *MemoryStore) Delete(ctx context.Context, id string) error {
 	sess, ok := s.sessions[id]
 	if ok {
 		delete(s.sessions, id)
-		if idx := s.userIdx[sess.UserID]; idx != nil {
+		if idx := s.subjectIdx[sess.SubjectID]; idx != nil {
 			delete(idx, id)
 			if len(idx) == 0 {
-				delete(s.userIdx, sess.UserID)
+				delete(s.subjectIdx, sess.SubjectID)
 			}
 		}
 	}
 	return nil
 }
 
-func (s *MemoryStore) DeleteByUser(ctx context.Context, userID string) error {
+func (s *MemoryStore) DeleteBySubject(ctx context.Context, subjectID string) error {
 	_ = ctx
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	idx := s.userIdx[userID]
+	idx := s.subjectIdx[subjectID]
 	for sid := range idx {
 		delete(s.sessions, sid)
 	}
-	delete(s.userIdx, userID)
+	delete(s.subjectIdx, subjectID)
 	return nil
 }
 
@@ -99,19 +99,21 @@ func (s *MemoryStore) UpdateMetadata(ctx context.Context, id string, metadata ma
 	return nil
 }
 
-func (s *MemoryStore) BanUser(ctx context.Context, userID string, until time.Time) error {
+func (s *MemoryStore) BanSubject(ctx context.Context, subjectID string, until time.Time) error {
 	_ = ctx
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.bans[userID] = until
+
+	s.bans[subjectID] = until
 	return nil
 }
 
-func (s *MemoryStore) IsUserBanned(ctx context.Context, userID string) (bool, error) {
+func (s *MemoryStore) IsSubjectBanned(ctx context.Context, subjectID string) (bool, error) {
 	_ = ctx
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	until, ok := s.bans[userID]
+
+	until, ok := s.bans[subjectID]
 	if !ok {
 		return false, nil
 	}

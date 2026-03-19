@@ -17,14 +17,16 @@ const (
 
 type SQLStore struct {
 	DB            *sql.DB
+	SQLExec       func(ctx context.Context, query string, args ...any) (sql.Result, error)
+	SQLQueryRow   func(ctx context.Context, query string, args ...any) *sql.Row
 	Dialect       SQLDialect
 	SessionsTable string
 	BansTable     string
 }
 
 func (s *SQLStore) Put(ctx context.Context, sess Session) error {
-	if s.DB == nil {
-		return fmt.Errorf("auth: sql missing db")
+	if s.SQLExec == nil {
+		return fmt.Errorf("auth: sql missing SQLExec")
 	}
 	st := s.sessionsTable()
 
@@ -34,17 +36,16 @@ func (s *SQLStore) Put(ctx context.Context, sess Session) error {
 	}
 
 	upd := fmt.Sprintf(
-		"update %s set user_id=%s, user_type=%s, created_at=%s, expires_at=%s, refresh_sum=%s, revoked_at=%s, metadata=%s where id=%s",
+		"update %s set subject_id=%s, subject_type=%s, created_at=%s, expires_at=%s, refresh_sum=%s, metadata=%s where id=%s",
 		st,
-		s.ph(1), s.ph(2), s.ph(3), s.ph(4), s.ph(5), s.ph(6), s.ph(7), s.ph(8),
+		s.ph(1), s.ph(2), s.ph(3), s.ph(4), s.ph(5), s.ph(6), s.ph(7),
 	)
-	res, err := s.DB.ExecContext(ctx, upd,
-		sess.UserID,
-		sess.UserType,
+	res, err := s.SQLExec(ctx, upd,
+		sess.SubjectID,
+		sess.SubjectType,
 		sess.CreatedAt,
 		sess.ExpiresAt,
 		sess.RefreshTokenSum[:],
-		sess.RevokedAt,
 		meta,
 		sess.ID,
 	)
@@ -60,39 +61,38 @@ func (s *SQLStore) Put(ctx context.Context, sess Session) error {
 	}
 
 	ins := fmt.Sprintf(
-		"insert into %s (id, user_id, user_type, created_at, expires_at, refresh_sum, revoked_at, metadata) values (%s,%s,%s,%s,%s,%s,%s,%s)",
+		"insert into %s (id, subject_id, subject_type, created_at, expires_at, refresh_sum, metadata) values (%s,%s,%s,%s,%s,%s,%s)",
 		st,
-		s.ph(1), s.ph(2), s.ph(3), s.ph(4), s.ph(5), s.ph(6), s.ph(7), s.ph(8),
+		s.ph(1), s.ph(2), s.ph(3), s.ph(4), s.ph(5), s.ph(6), s.ph(7),
 	)
-	_, err = s.DB.ExecContext(ctx, ins,
+	_, err = s.SQLExec(ctx, ins,
 		sess.ID,
-		sess.UserID,
-		sess.UserType,
+		sess.SubjectID,
+		sess.SubjectType,
 		sess.CreatedAt,
 		sess.ExpiresAt,
 		sess.RefreshTokenSum[:],
-		sess.RevokedAt,
 		meta,
 	)
 	return err
 }
 
 func (s *SQLStore) Get(ctx context.Context, id string) (Session, error) {
-	if s.DB == nil {
-		return Session{}, fmt.Errorf("auth: sql missing db")
+	if s.SQLQueryRow == nil {
+		return Session{}, fmt.Errorf("auth: sql missing SQLQueryRow")
 	}
 
 	q := fmt.Sprintf(
-		"select id, user_id, user_type, created_at, expires_at, refresh_sum, revoked_at, metadata from %s where id=%s",
+		"select id, subject_id, subject_type, created_at, expires_at, refresh_sum, metadata from %s where id=%s",
 		s.sessionsTable(),
 		s.ph(1),
 	)
-	row := s.DB.QueryRowContext(ctx, q, id)
+	row := s.SQLQueryRow(ctx, q, id)
 
 	var sess Session
 	var sum []byte
 	var meta []byte
-	if err := row.Scan(&sess.ID, &sess.UserID, &sess.UserType, &sess.CreatedAt, &sess.ExpiresAt, &sum, &sess.RevokedAt, &meta); err != nil {
+	if err := row.Scan(&sess.ID, &sess.SubjectID, &sess.SubjectType, &sess.CreatedAt, &sess.ExpiresAt, &sum, &meta); err != nil {
 		if err == sql.ErrNoRows {
 			return Session{}, ErrSessionNotFound
 		}
@@ -111,9 +111,6 @@ func (s *SQLStore) Get(ctx context.Context, id string) (Session, error) {
 }
 
 func (s *SQLStore) UpdateMetadata(ctx context.Context, id string, metadata map[string]string) error {
-	if s.DB == nil {
-		return fmt.Errorf("auth: sql missing db")
-	}
 	sess, err := s.Get(ctx, id)
 	if err != nil {
 		return err
@@ -128,31 +125,31 @@ func (s *SQLStore) UpdateMetadata(ctx context.Context, id string, metadata map[s
 }
 
 func (s *SQLStore) Delete(ctx context.Context, id string) error {
-	if s.DB == nil {
-		return fmt.Errorf("auth: sql missing db")
+	if s.SQLExec == nil {
+		return fmt.Errorf("auth: sql missing SQLExec")
 	}
 	q := fmt.Sprintf("delete from %s where id=%s", s.sessionsTable(), s.ph(1))
-	_, err := s.DB.ExecContext(ctx, q, id)
+	_, err := s.SQLExec(ctx, q, id)
 	return err
 }
 
-func (s *SQLStore) DeleteByUser(ctx context.Context, userID string) error {
-	if s.DB == nil {
-		return fmt.Errorf("auth: sql missing db")
+func (s *SQLStore) DeleteBySubject(ctx context.Context, subjectID string) error {
+	if s.SQLExec == nil {
+		return fmt.Errorf("auth: sql missing SQLExec")
 	}
-	q := fmt.Sprintf("delete from %s where user_id=%s", s.sessionsTable(), s.ph(1))
-	_, err := s.DB.ExecContext(ctx, q, userID)
+	q := fmt.Sprintf("delete from %s where subject_id=%s", s.sessionsTable(), s.ph(1))
+	_, err := s.SQLExec(ctx, q, subjectID)
 	return err
 }
 
-func (s *SQLStore) BanUser(ctx context.Context, userID string, until time.Time) error {
-	if s.DB == nil {
-		return fmt.Errorf("auth: sql missing db")
+func (s *SQLStore) BanSubject(ctx context.Context, subjectID string, until time.Time) error {
+	if s.SQLExec == nil {
+		return fmt.Errorf("auth: sql missing SQLExec")
 	}
 	bt := s.bansTable()
 
-	upd := fmt.Sprintf("update %s set until_at=%s where user_id=%s", bt, s.ph(1), s.ph(2))
-	res, err := s.DB.ExecContext(ctx, upd, until, userID)
+	upd := fmt.Sprintf("update %s set until_at=%s where subject_id=%s", bt, s.ph(1), s.ph(2))
+	res, err := s.SQLExec(ctx, upd, until, subjectID)
 	if err != nil {
 		return err
 	}
@@ -164,18 +161,18 @@ func (s *SQLStore) BanUser(ctx context.Context, userID string, until time.Time) 
 		return nil
 	}
 
-	ins := fmt.Sprintf("insert into %s (user_id, until_at) values (%s,%s)", bt, s.ph(1), s.ph(2))
-	_, err = s.DB.ExecContext(ctx, ins, userID, until)
+	ins := fmt.Sprintf("insert into %s (subject_id, until_at) values (%s,%s)", bt, s.ph(1), s.ph(2))
+	_, err = s.SQLExec(ctx, ins, subjectID, until)
 	return err
 }
 
-func (s *SQLStore) IsUserBanned(ctx context.Context, userID string) (bool, error) {
-	if s.DB == nil {
-		return false, fmt.Errorf("auth: sql missing db")
+func (s *SQLStore) IsSubjectBanned(ctx context.Context, subjectID string) (bool, error) {
+	if s.SQLQueryRow == nil {
+		return false, fmt.Errorf("auth: sql missing SQLQueryRow")
 	}
 
-	q := fmt.Sprintf("select until_at from %s where user_id=%s", s.bansTable(), s.ph(1))
-	row := s.DB.QueryRowContext(ctx, q, userID)
+	q := fmt.Sprintf("select until_at from %s where subject_id=%s", s.bansTable(), s.ph(1))
+	row := s.SQLQueryRow(ctx, q, subjectID)
 	var until time.Time
 	if err := row.Scan(&until); err != nil {
 		if err == sql.ErrNoRows {

@@ -34,7 +34,7 @@ func (s *CachingStore) Get(ctx context.Context, id string) (Session, error) {
 	if err != nil {
 		return Session{}, ErrSessionNotFound
 	}
-	if time.Now().After(sess.ExpiresAt) || sess.RevokedAt != nil {
+	if time.Now().After(sess.ExpiresAt) {
 		return Session{}, ErrSessionNotFound
 	}
 	return sess, nil
@@ -44,11 +44,11 @@ func (s *CachingStore) Delete(ctx context.Context, id string) error {
 	return s.Cache.Delete(ctx, s.sessionKey(id))
 }
 
-func (s *CachingStore) DeleteByUser(ctx context.Context, userID string) error {
-	// Note: CachingStore based on key-value doesn't easily support DeleteByUser 
-	// unless we maintain a secondary index (user -> [session_ids]).
+func (s *CachingStore) DeleteBySubject(ctx context.Context, subjectID string) error {
+	// Note: CachingStore based on key-value doesn't easily support DeleteBySubject
+	// unless we maintain a secondary index (subject -> [session_ids]).
 	// For now, this is a limitation of simple KV caching stores.
-	return fmt.Errorf("auth: DeleteByUser not implemented for CachingStore")
+	return fmt.Errorf("auth: DeleteBySubject not implemented for CachingStore")
 }
 
 func (s *CachingStore) UpdateMetadata(ctx context.Context, id string, metadata map[string]string) error {
@@ -65,7 +65,7 @@ func (s *CachingStore) UpdateMetadata(ctx context.Context, id string, metadata m
 	return s.Put(ctx, sess)
 }
 
-func (s *CachingStore) BanUser(ctx context.Context, userID string, until time.Time) error {
+func (s *CachingStore) BanSubject(ctx context.Context, subjectID string, until time.Time) error {
 	if s.Bans == nil {
 		return fmt.Errorf("auth: bans cache missing")
 	}
@@ -73,14 +73,14 @@ func (s *CachingStore) BanUser(ctx context.Context, userID string, until time.Ti
 	if ttl <= 0 {
 		return nil
 	}
-	return s.Bans.Set(ctx, s.banKey(userID), until, store.WithExpiration(ttl))
+	return s.Bans.Set(ctx, s.banKey(subjectID), until, store.WithExpiration(ttl))
 }
 
-func (s *CachingStore) IsUserBanned(ctx context.Context, userID string) (bool, error) {
+func (s *CachingStore) IsSubjectBanned(ctx context.Context, subjectID string) (bool, error) {
 	if s.Bans == nil {
 		return false, nil
 	}
-	until, err := s.Bans.Get(ctx, s.banKey(userID))
+	until, err := s.Bans.Get(ctx, s.banKey(subjectID))
 	if err != nil {
 		return false, nil
 	}
@@ -91,6 +91,6 @@ func (s *CachingStore) sessionKey(id string) string {
 	return "auth:sess:" + id
 }
 
-func (s *CachingStore) banKey(userID string) string {
-	return "auth:ban:" + userID
+func (s *CachingStore) banKey(subjectID string) string {
+	return "auth:ban:" + subjectID
 }

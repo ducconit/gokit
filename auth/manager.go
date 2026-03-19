@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -29,6 +30,26 @@ func New(cfg Config, store SessionStore) (*Manager, error) {
 	if store == nil {
 		return nil, fmt.Errorf("auth: missing session store")
 	}
+
+	// If it's a SQLStore, inject the execution logic from config or use defaults if DB is provided
+	if sqlStore, ok := store.(*SQLStore); ok {
+		if cfg.SQLExec != nil {
+			sqlStore.SQLExec = cfg.SQLExec
+		} else if sqlStore.DB != nil {
+			sqlStore.SQLExec = func(ctx context.Context, query string, args ...any) (sql.Result, error) {
+				return sqlStore.DB.ExecContext(ctx, query, args...)
+			}
+		}
+
+		if cfg.SQLQueryRow != nil {
+			sqlStore.SQLQueryRow = cfg.SQLQueryRow
+		} else if sqlStore.DB != nil {
+			sqlStore.SQLQueryRow = func(ctx context.Context, query string, args ...any) *sql.Row {
+				return sqlStore.DB.QueryRowContext(ctx, query, args...)
+			}
+		}
+	}
+
 	if len(cfg.HMACSecret) == 0 {
 		return nil, fmt.Errorf("auth: missing HMAC secret")
 	}
@@ -46,20 +67,20 @@ func New(cfg Config, store SessionStore) (*Manager, error) {
 	}, nil
 }
 
-func (m *Manager) Issue(ctx context.Context, userID, userType string, metadata map[string]string) (TokenPair, error) {
+func (m *Manager) Issue(ctx context.Context, subjectID, subjectType string, metadata map[string]string) (TokenPair, error) {
 	now := m.now()
 	sid := id.New()
 
 	refreshExp := now.Add(m.cfg.RefreshTTL)
-	refresh, err := m.signRefreshToken(now, refreshExp, userID, userType, sid)
+	refresh, err := m.signRefreshToken(now, refreshExp, subjectID, subjectType, sid)
 	if err != nil {
 		return TokenPair{}, err
 	}
 
 	s := Session{
 		ID:              sid,
-		UserID:          userID,
-		UserType:        userType,
+		SubjectID:       subjectID,
+		SubjectType:     subjectType,
 		CreatedAt:       now,
 		ExpiresAt:       refreshExp,
 		RefreshTokenSum: sha256.Sum256([]byte(refresh)),
@@ -70,7 +91,7 @@ func (m *Manager) Issue(ctx context.Context, userID, userType string, metadata m
 	}
 
 	accessExp := now.Add(m.cfg.AccessTTL)
-	access, err := m.signAccessToken(now, accessExp, userID, userType, sid)
+	access, err := m.signAccessToken(now, accessExp, subjectID, subjectType, sid)
 	if err != nil {
 		return TokenPair{}, err
 	}
@@ -104,8 +125,8 @@ func (m *Manager) VerifyAccess(ctx context.Context, token string) (AccessClaims,
 		return AccessClaims{}, ErrUnauthorized
 	}
 
-	// 1. Check if user is banned
-	banned, err := m.store.IsUserBanned(ctx, claims.UserID)
+	// 1. Check if subject is banned
+	banned, err := m.store.IsSubjectBanned(ctx, claims.SubjectID)
 	if err != nil {
 		return AccessClaims{}, err
 	}
@@ -120,9 +141,6 @@ func (m *Manager) VerifyAccess(ctx context.Context, token string) (AccessClaims,
 			return AccessClaims{}, ErrUnauthorized
 		}
 		return AccessClaims{}, err
-	}
-	if s.RevokedAt != nil {
-		return AccessClaims{}, ErrUnauthorized
 	}
 	if m.now().After(s.ExpiresAt) {
 		return AccessClaims{}, ErrUnauthorized
@@ -152,9 +170,6 @@ func (m *Manager) Refresh(ctx context.Context, refreshToken string, opts Refresh
 	if err != nil {
 		return TokenPair{}, ErrUnauthorized
 	}
-	if s.RevokedAt != nil {
-		return TokenPair{}, ErrUnauthorized
-	}
 	if m.now().After(s.ExpiresAt) {
 		return TokenPair{}, ErrUnauthorized
 	}
@@ -168,7 +183,7 @@ func (m *Manager) Refresh(ctx context.Context, refreshToken string, opts Refresh
 
 	if opts.Rotate {
 		newRefreshExp = now.Add(m.cfg.RefreshTTL)
-		newRefresh, err = m.signRefreshToken(now, newRefreshExp, s.UserID, s.UserType, s.ID)
+		newRefresh, err = m.signRefreshToken(now, newRefreshExp, s.SubjectID, s.SubjectType, s.ID)
 		if err != nil {
 			return TokenPair{}, err
 		}
@@ -182,7 +197,7 @@ func (m *Manager) Refresh(ctx context.Context, refreshToken string, opts Refresh
 	}
 
 	newAccessExp := now.Add(m.cfg.AccessTTL)
-	newAccess, err := m.signAccessToken(now, newAccessExp, s.UserID, s.UserType, s.ID)
+	newAccess, err := m.signAccessToken(now, newAccessExp, s.SubjectID, s.SubjectType, s.ID)
 	if err != nil {
 		return TokenPair{}, err
 	}
@@ -200,25 +215,25 @@ func (m *Manager) Logout(ctx context.Context, sessionID string) error {
 	return m.store.Delete(ctx, sessionID)
 }
 
-func (m *Manager) LogoutAll(ctx context.Context, userID string) error {
-	return m.store.DeleteByUser(ctx, userID)
+func (m *Manager) LogoutAll(ctx context.Context, subjectID string) error {
+	return m.store.DeleteBySubject(ctx, subjectID)
 }
 
-func (m *Manager) BanUser(ctx context.Context, userID string, until time.Time) error {
-	return m.store.BanUser(ctx, userID, until)
+func (m *Manager) BanSubject(ctx context.Context, subjectID string, until time.Time) error {
+	return m.store.BanSubject(ctx, subjectID, until)
 }
 
-func (m *Manager) signAccessToken(issuedAt, expiresAt time.Time, userID, userType, sessionID string) (string, error) {
+func (m *Manager) signAccessToken(issuedAt, expiresAt time.Time, subjectID, subjectType, sessionID string) (string, error) {
 	claims := AccessClaims{
-		UserID:    userID,
-		UserType:  userType,
-		SessionID: sessionID,
+		SubjectID:   subjectID,
+		SubjectType: subjectType,
+		SessionID:   sessionID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    m.cfg.Issuer,
 			Audience:  jwt.ClaimStrings(m.cfg.Audience),
 			IssuedAt:  jwt.NewNumericDate(issuedAt),
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
-			Subject:   userID,
+			Subject:   subjectID,
 			ID:        id.New(),
 		},
 	}
@@ -226,17 +241,17 @@ func (m *Manager) signAccessToken(issuedAt, expiresAt time.Time, userID, userTyp
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(m.cfg.HMACSecret)
 }
 
-func (m *Manager) signRefreshToken(issuedAt, expiresAt time.Time, userID, userType, sessionID string) (string, error) {
+func (m *Manager) signRefreshToken(issuedAt, expiresAt time.Time, subjectID, subjectType, sessionID string) (string, error) {
 	claims := RefreshClaims{
-		UserID:    userID,
-		UserType:  userType,
-		SessionID: sessionID,
+		SubjectID:   subjectID,
+		SubjectType: subjectType,
+		SessionID:   sessionID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    m.cfg.Issuer,
 			Audience:  jwt.ClaimStrings(m.cfg.Audience),
 			IssuedAt:  jwt.NewNumericDate(issuedAt),
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
-			Subject:   userID,
+			Subject:   subjectID,
 			ID:        id.New(),
 		},
 	}

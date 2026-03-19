@@ -34,11 +34,11 @@ func TestIssueVerifyRefreshLogout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VerifyAccess: %v", err)
 	}
-	if claims.UserID != "u1" {
-		t.Fatalf("expected user u1, got %s", claims.UserID)
+	if claims.SubjectID != "u1" {
+		t.Fatalf("expected subject u1, got %s", claims.SubjectID)
 	}
-	if claims.UserType != "user" {
-		t.Fatalf("expected user type 'user', got %s", claims.UserType)
+	if claims.SubjectType != "user" {
+		t.Fatalf("expected subject type 'user', got %s", claims.SubjectType)
 	}
 
 	newPair, err := m.Refresh(ctx, pair.RefreshToken, RefreshOptions{Rotate: true})
@@ -66,7 +66,34 @@ func TestIssueVerifyRefreshLogout(t *testing.T) {
 	}
 }
 
-func TestBanUser(t *testing.T) {
+func TestLogoutAll(t *testing.T) {
+	ctx := context.Background()
+
+	store := NewMemoryStore()
+	m, _ := New(Config{
+		Issuer:     "test",
+		Audience:   []string{"test"},
+		AccessTTL:  1 * time.Minute,
+		RefreshTTL: 10 * time.Minute,
+		HMACSecret: []byte("secret"),
+	}, store)
+
+	pair1, _ := m.Issue(ctx, "u1", "user", nil)
+	pair2, _ := m.Issue(ctx, "u1", "user", nil)
+
+	if err := m.LogoutAll(ctx, "u1"); err != nil {
+		t.Fatalf("LogoutAll: %v", err)
+	}
+
+	if _, err := m.VerifyAccess(ctx, pair1.AccessToken); err == nil {
+		t.Fatalf("expected unauthorized for pair1 after logout all")
+	}
+	if _, err := m.VerifyAccess(ctx, pair2.AccessToken); err == nil {
+		t.Fatalf("expected unauthorized for pair2 after logout all")
+	}
+}
+
+func TestBanSubject(t *testing.T) {
 	ctx := context.Background()
 
 	store := NewMemoryStore()
@@ -86,8 +113,8 @@ func TestBanUser(t *testing.T) {
 		t.Fatalf("Issue: %v", err)
 	}
 
-	if err := m.BanUser(ctx, "u1", time.Now().Add(1*time.Hour)); err != nil {
-		t.Fatalf("BanUser: %v", err)
+	if err := m.BanSubject(ctx, "u1", time.Now().Add(1*time.Hour)); err != nil {
+		t.Fatalf("BanSubject: %v", err)
 	}
 
 	if _, err := m.VerifyAccess(ctx, pair.AccessToken); err == nil {
